@@ -70,6 +70,8 @@ SUPABASE_URL
 SUPABASE_KEY
 ```
 
+The Vercel backend uses `requirements-vercel.txt`, not the full local `requirements.txt`, so the serverless bundle does not include Streamlit or ingestion-only packages.
+
 After deployment, set the Streamlit app's `BACKEND_URL` to your Vercel backend URL, for example:
 
 ```text
