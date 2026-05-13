@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+langchain
+langchain-text-splitters
+langchain-google-genai
+langchain-qdrant
+langchain-openai
+qdrant-client
+supabase
+streamlit
+requests
