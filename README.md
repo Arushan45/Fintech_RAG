@@ -48,3 +48,40 @@ This repo includes `render.yaml` with two services:
 Create a Render Blueprint from this GitHub repository and provide the required secret environment variables when prompted.
 
 The Streamlit service receives the FastAPI service hostname from Render through `BACKEND_URL`. The app accepts either a full URL or a hostname and normalizes hostnames to HTTPS.
+
+## Deploy Backend on Vercel
+
+Vercel is suitable for the FastAPI backend. Streamlit should be deployed separately on Streamlit Community Cloud.
+
+The backend entrypoint is:
+
+```text
+api/index.py
+```
+
+Deploy this repo on Vercel and add these environment variables:
+
+```text
+QDRANT_URL
+QDRANT_API_KEY
+GEMINI_API_KEY
+OPENAI_API_KEY
+SUPABASE_URL
+SUPABASE_KEY
+```
+
+After deployment, set the Streamlit app's `BACKEND_URL` to your Vercel backend URL, for example:
+
+```text
+https://your-project.vercel.app
+```
+
+## Deploy Frontend on Streamlit Community Cloud
+
+Deploy `app.py` from this repo on Streamlit Community Cloud and add these secrets:
+
+```text
+BACKEND_URL=https://your-project.vercel.app
+SUPABASE_URL=your-supabase-url
+SUPABASE_KEY=your-supabase-publishable-key
+```
