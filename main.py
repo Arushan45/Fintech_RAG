@@ -81,6 +81,11 @@ class ChatResponse(BaseModel):
     sources: list[SourceChunk]
 
 
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 @lru_cache(maxsize=1)
 def get_qdrant_client() -> QdrantClient:
     return QdrantClient(

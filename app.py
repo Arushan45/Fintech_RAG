@@ -49,7 +49,10 @@ def get_supabase_client() -> Client:
 
 
 def get_backend_url() -> str:
-    return os.getenv("BACKEND_URL", DEFAULT_BACKEND_URL).rstrip("/")
+    backend_url = os.getenv("BACKEND_URL", DEFAULT_BACKEND_URL).strip().rstrip("/")
+    if backend_url and not backend_url.startswith(("http://", "https://")):
+        backend_url = f"https://{backend_url}"
+    return backend_url
 
 
 def as_dict(value: Any) -> dict[str, Any]:

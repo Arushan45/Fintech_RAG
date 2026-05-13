@@ -46,3 +46,5 @@ This repo includes `render.yaml` with two services:
 - `finsolve-rag-app`: Streamlit frontend
 
 Create a Render Blueprint from this GitHub repository and provide the required secret environment variables when prompted.
+
+The Streamlit service receives the FastAPI service hostname from Render through `BACKEND_URL`. The app accepts either a full URL or a hostname and normalizes hostnames to HTTPS.

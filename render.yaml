@@ -5,6 +5,7 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
     envVars:
       - key: QDRANT_URL
         sync: false
@@ -25,12 +26,13 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
+    healthCheckPath: /_stcore/health
     envVars:
       - key: BACKEND_URL
         fromService:
           type: web
           name: finsolve-rag-api
-          envVarKey: RENDER_EXTERNAL_URL
+          envVarKey: RENDER_EXTERNAL_HOSTNAME
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_KEY
