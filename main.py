@@ -111,6 +111,16 @@ def healthz() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/")
+def root() -> dict[str, Any]:
+    return {
+        "service": "FinSolve RBAC RAG Chatbot API",
+        "status": "ok",
+        "health": "/healthz",
+        "chat": "/api/chat",
+    }
+
+
 @lru_cache(maxsize=1)
 def get_qdrant_client() -> QdrantClient:
     return QdrantClient(
