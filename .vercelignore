@@ -8,7 +8,6 @@ data
 app.py
 ingest.py
 render.yaml
-requirements.txt
 streamlit.log
 streamlit.err.log
 backend.log
