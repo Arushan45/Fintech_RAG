@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -31,6 +32,11 @@ SYSTEM_PROMPT = (
     "If the answer is not in the context, state that you do not have permission "
     "or the data is unavailable."
 )
+DEFAULT_CORS_ORIGINS = [
+    "https://fintechrag-tjmusafdzpry8drgmtcfud.streamlit.app",
+    "http://127.0.0.1:8501",
+    "http://localhost:8501",
+]
 
 
 def load_env_file(path: Path = Path(".env")) -> None:
@@ -64,6 +70,25 @@ def require_env(name: str) -> str:
 
 load_env_file()
 app = FastAPI(title="FinSolve RBAC RAG Chatbot")
+
+
+def get_cors_origins() -> list[str]:
+    origins = os.getenv("CORS_ORIGINS", "")
+    configured_origins = [
+        origin.strip().rstrip("/")
+        for origin in origins.split(",")
+        if origin.strip()
+    ]
+    return configured_origins or DEFAULT_CORS_ORIGINS
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_cors_origins(),
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+)
 
 
 class ChatRequest(BaseModel):

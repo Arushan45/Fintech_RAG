@@ -68,6 +68,7 @@ GEMINI_API_KEY
 OPENAI_API_KEY
 SUPABASE_URL
 SUPABASE_KEY
+CORS_ORIGINS=https://fintechrag-tjmusafdzpry8drgmtcfud.streamlit.app
 ```
 
 The Vercel backend uses `requirements-vercel.txt`, not the full local `requirements.txt`, so the serverless bundle does not include Streamlit or ingestion-only packages.
@@ -86,4 +87,10 @@ Deploy `app.py` from this repo on Streamlit Community Cloud and add these secret
 BACKEND_URL=https://your-project.vercel.app
 SUPABASE_URL=your-supabase-url
 SUPABASE_KEY=your-supabase-publishable-key
+```
+
+For this deployed Streamlit app, set:
+
+```text
+BACKEND_URL=https://your-vercel-project.vercel.app
 ```
