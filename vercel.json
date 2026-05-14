@@ -1,12 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "pip install -r requirements-vercel.txt",
-  "functions": {
-    "api/**/*.py": {
-      "maxDuration": 60,
-      "excludeFiles": "{.venv/**,__pycache__/**,.git/**,data/**,*.log,app.py,ingest.py,render.yaml,streamlit*.log,backend*.log}"
-    }
-  },
   "rewrites": [
     {
       "source": "/(.*)",
