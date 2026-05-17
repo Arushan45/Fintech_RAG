@@ -1,6 +1,6 @@
 # FinSolve RBAC RAG Chatbot
 
-Production-ready Python prototype for an RBAC-aware RAG chatbot using FastAPI, Streamlit, Supabase Auth, Gemini embeddings, OpenAI `gpt-4o`, and Qdrant Cloud.
+Production-ready Python prototype for an RBAC-aware RAG chatbot using FastAPI, Streamlit, Supabase Auth, Gemini embeddings/chat, optional OpenAI chat, and Qdrant Cloud.
 
 ## Local Setup
 
@@ -65,11 +65,13 @@ Deploy this repo on Vercel and add these environment variables:
 QDRANT_URL
 QDRANT_API_KEY
 GEMINI_API_KEY
-OPENAI_API_KEY
+LLM_PROVIDER=gemini
 SUPABASE_URL
 SUPABASE_KEY
 CORS_ORIGINS=https://fintechrag-tjmusafdzpry8drgmtcfud.streamlit.app
 ```
+
+`LLM_PROVIDER` defaults to `gemini`. To use OpenAI instead, set `LLM_PROVIDER=openai` and add `OPENAI_API_KEY`.
 
 The Vercel backend uses `requirements-vercel.txt`, not the full local `requirements.txt`, so the serverless bundle does not include Streamlit or ingestion-only packages.
 

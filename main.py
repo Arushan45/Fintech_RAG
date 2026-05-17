@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_qdrant import QdrantVectorStore
 from pydantic import BaseModel, Field
@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 COLLECTION_NAME = "finsolve_kb"
 EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 1536
-LLM_MODEL = "gpt-4o"
+DEFAULT_LLM_PROVIDER = "gemini"
+OPENAI_LLM_MODEL = "gpt-4o"
+GEMINI_LLM_MODEL = "gemini-1.5-flash"
 DEFAULT_TOP_K = 5
 SYSTEM_PROMPT = (
     "You are an AI assistant for FinSolve. Only answer using the provided context. "
@@ -169,12 +171,24 @@ def ensure_payload_indexes() -> None:
 
 
 @lru_cache(maxsize=1)
-def get_llm() -> ChatOpenAI:
-    return ChatOpenAI(
-        model=LLM_MODEL,
-        temperature=0,
-        api_key=require_env("OPENAI_API_KEY"),
-    )
+def get_llm() -> Any:
+    provider = os.getenv("LLM_PROVIDER", DEFAULT_LLM_PROVIDER).strip().lower()
+
+    if provider == "openai":
+        return ChatOpenAI(
+            model=os.getenv("OPENAI_LLM_MODEL", OPENAI_LLM_MODEL),
+            temperature=0,
+            api_key=require_env("OPENAI_API_KEY"),
+        )
+
+    if provider == "gemini":
+        return ChatGoogleGenerativeAI(
+            model=os.getenv("GEMINI_LLM_MODEL", GEMINI_LLM_MODEL),
+            temperature=0,
+            google_api_key=require_env("GEMINI_API_KEY"),
+        )
+
+    raise RuntimeError("LLM_PROVIDER must be either 'gemini' or 'openai'")
 
 
 def build_access_filter(user_role: str) -> models.Filter | None:
