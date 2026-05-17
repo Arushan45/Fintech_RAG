@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,8 @@ from qdrant_client.http import models
 
 from security import CurrentUser, get_current_user
 
+
+logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "finsolve_kb"
 EMBEDDING_MODEL = "gemini-embedding-001"
@@ -278,6 +281,7 @@ def chat(
             detail=str(exc),
         ) from exc
     except Exception as exc:
+        logger.exception("Chat service failed for authenticated user role=%s", current_user.role)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Chat service failed. Check Qdrant, Gemini, OpenAI, and Supabase configuration.",

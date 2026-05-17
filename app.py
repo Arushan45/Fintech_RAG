@@ -118,6 +118,7 @@ def get_safe_error_message(exc: Exception) -> str:
 
 def initialize_session_state() -> None:
     st.session_state.setdefault("access_token", None)
+    st.session_state.setdefault("refresh_token", None)
     st.session_state.setdefault("user_email", None)
     st.session_state.setdefault("messages", [])
 
@@ -131,18 +132,21 @@ def login(email: str, password: str) -> None:
     )
     session = extract_session(response)
     access_token = session.get("access_token")
+    refresh_token = session.get("refresh_token")
 
     if not access_token:
         raise RuntimeError("Login succeeded but no access token was returned.")
 
     user = extract_user(response)
     st.session_state.access_token = access_token
+    st.session_state.refresh_token = refresh_token
     st.session_state.user_email = user.get("email", email)
     st.session_state.messages = []
 
 
 def logout() -> None:
     st.session_state.access_token = None
+    st.session_state.refresh_token = None
     st.session_state.user_email = None
     st.session_state.messages = []
 
@@ -171,31 +175,65 @@ def render_login() -> None:
 
 
 def call_chat_api(question: str) -> dict[str, Any]:
-    response = requests.post(
-        f"{get_backend_url()}/api/chat",
-        json={
-            "question": question,
-            "top_k": 5,
-        },
-        headers={
-            "Authorization": f"Bearer {st.session_state.access_token}",
-        },
-        timeout=120,
-    )
-
-    if response.status_code == 401:
-        logout()
-        raise RuntimeError("Your session expired. Please sign in again.")
-
-    if response.status_code >= 400:
+    def response_detail(response: requests.Response) -> str:
         detail = response.text
         try:
             detail = response.json().get("detail", detail)
         except ValueError:
             pass
-        raise RuntimeError(str(detail))
+        return str(detail)
+
+    def post_chat() -> requests.Response:
+        return requests.post(
+            f"{get_backend_url()}/api/chat",
+            json={
+                "question": question,
+                "top_k": 5,
+            },
+            headers={
+                "Authorization": f"Bearer {st.session_state.access_token}",
+            },
+            timeout=120,
+        )
+
+    response = post_chat()
+
+    if response.status_code == 401:
+        if refresh_session():
+            response = post_chat()
+
+        if response.status_code == 401:
+            detail = response_detail(response)
+            logout()
+            raise RuntimeError(
+                "Authentication failed. Please sign in again. "
+                f"Backend detail: {detail}"
+            )
+
+    if response.status_code >= 400:
+        raise RuntimeError(response_detail(response))
 
     return response.json()
+
+
+def refresh_session() -> bool:
+    refresh_token = st.session_state.get("refresh_token")
+    if not refresh_token:
+        return False
+
+    try:
+        response = get_supabase_client().auth.refresh_session(refresh_token)
+        session = extract_session(response)
+    except Exception:
+        return False
+
+    access_token = session.get("access_token")
+    if not access_token:
+        return False
+
+    st.session_state.access_token = access_token
+    st.session_state.refresh_token = session.get("refresh_token") or refresh_token
+    return True
 
 
 def render_sources(sources: list[dict[str, Any]]) -> None:
