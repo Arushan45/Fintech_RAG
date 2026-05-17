@@ -30,7 +30,7 @@ EMBEDDING_MODEL = "gemini-embedding-001"
 EMBEDDING_DIMENSIONS = 1536
 DEFAULT_LLM_PROVIDER = "gemini"
 OPENAI_LLM_MODEL = "gpt-4o"
-GEMINI_LLM_MODEL = "gemini-1.5-flash"
+GEMINI_LLM_MODEL = "gemini-2.5-flash"
 DEFAULT_TOP_K = 5
 SYSTEM_PROMPT = (
     "You are an AI assistant for FinSolve. Only answer using the provided context. "
