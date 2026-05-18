@@ -13,6 +13,8 @@ from supabase import Client, create_client
 
 
 DEFAULT_BACKEND_URL = "http://127.0.0.1:8000"
+ADMIN_ROLES = {"admin", "c-level"}
+AVAILABLE_ROLES = ["employee", "finance", "hr", "marketing", "engineering", "c-level", "admin"]
 
 
 def load_env_file(path: Path = Path(".env")) -> None:
@@ -150,10 +152,22 @@ def get_safe_error_message(exc: Exception) -> str:
     return message or "Check your email, password, and Supabase configuration."
 
 
+def extract_user_role(user: dict[str, Any]) -> str | None:
+    metadata = user.get("user_metadata")
+    if not isinstance(metadata, dict):
+        metadata = user.get("raw_user_meta_data")
+    if isinstance(metadata, dict):
+        role = metadata.get("role")
+        if isinstance(role, str) and role.strip():
+            return role.strip()
+    return None
+
+
 def initialize_session_state() -> None:
     st.session_state.setdefault("access_token", None)
     st.session_state.setdefault("refresh_token", None)
     st.session_state.setdefault("user_email", None)
+    st.session_state.setdefault("user_role", None)
     st.session_state.setdefault("messages", [])
     st.session_state.setdefault("session_id", None)
 
@@ -176,6 +190,7 @@ def login(email: str, password: str) -> None:
     st.session_state.access_token = access_token
     st.session_state.refresh_token = refresh_token
     st.session_state.user_email = user.get("email", email)
+    st.session_state.user_role = extract_user_role(user)
     st.session_state.messages = []
     st.session_state.session_id = None
 
@@ -184,6 +199,7 @@ def logout() -> None:
     st.session_state.access_token = None
     st.session_state.refresh_token = None
     st.session_state.user_email = None
+    st.session_state.user_role = None
     st.session_state.messages = []
     st.session_state.session_id = None
 
@@ -269,6 +285,56 @@ def stream_chat_api(question: str) -> Iterator[dict[str, Any]]:
                 raise RuntimeError("Received malformed chat stream data.") from exc
     finally:
         response.close()
+
+
+def api_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {st.session_state.access_token}",
+        "Content-Type": "application/json",
+    }
+
+
+def backend_request(method: str, path: str, **kwargs: Any) -> requests.Response:
+    response = requests.request(
+        method,
+        f"{get_backend_url()}{path}",
+        headers=api_headers(),
+        timeout=30,
+        **kwargs,
+    )
+
+    if response.status_code == 401 and refresh_session():
+        response = requests.request(
+            method,
+            f"{get_backend_url()}{path}",
+            headers=api_headers(),
+            timeout=30,
+            **kwargs,
+        )
+
+    return response
+
+
+def fetch_admin_users() -> list[dict[str, Any]]:
+    response = backend_request("GET", "/api/admin/users")
+    if response.status_code >= 400:
+        raise RuntimeError(response.text)
+    payload = response.json()
+    users = payload.get("users", [])
+    return users if isinstance(users, list) else []
+
+
+def update_user_role(user_id: str, new_role: str) -> None:
+    response = backend_request(
+        "POST",
+        "/api/admin/update_role",
+        json={
+            "user_id": user_id,
+            "new_role": new_role,
+        },
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(response.text)
 
 
 def refresh_session() -> bool:
@@ -367,6 +433,53 @@ def start_new_chat() -> None:
     st.session_state.session_id = None
 
 
+def render_admin_panel() -> None:
+    if (st.session_state.user_role or "").strip().lower() not in ADMIN_ROLES:
+        return
+
+    st.divider()
+    st.caption("Admin")
+
+    with st.expander("User Roles", expanded=False):
+        try:
+            users = fetch_admin_users()
+        except Exception as exc:
+            st.caption(f"Unable to load users: {get_safe_error_message(exc)}")
+            return
+
+        if not users:
+            st.caption("No users found.")
+            return
+
+        for user in users:
+            user_id = user.get("id")
+            email = user.get("email") or "Unknown user"
+            current_role = user.get("role") or "employee"
+            if not isinstance(user_id, str) or not user_id:
+                continue
+
+            st.caption(str(email))
+            default_index = (
+                AVAILABLE_ROLES.index(current_role)
+                if current_role in AVAILABLE_ROLES
+                else 0
+            )
+            selected_role = st.selectbox(
+                "Role",
+                AVAILABLE_ROLES,
+                index=default_index,
+                key=f"role_select_{user_id}",
+                label_visibility="collapsed",
+            )
+
+            if st.button("Update Role", key=f"role_update_{user_id}", use_container_width=True):
+                try:
+                    update_user_role(user_id, selected_role)
+                    st.success(f"Updated {email} to {selected_role}.")
+                except Exception as exc:
+                    st.error(f"Unable to update role: {get_safe_error_message(exc)}")
+
+
 def render_sources(sources: list[dict[str, Any]]) -> None:
     with st.expander("Source References"):
         if not sources:
@@ -393,6 +506,8 @@ def render_chat() -> None:
     with st.sidebar:
         st.caption("Signed in as")
         st.write(st.session_state.user_email)
+        if st.session_state.user_role:
+            st.caption(f"Role: {st.session_state.user_role}")
 
         if st.button("New Chat", use_container_width=True):
             start_new_chat()
@@ -427,6 +542,8 @@ def render_chat() -> None:
                 except Exception as exc:
                     st.error(f"Unable to load chat: {get_safe_error_message(exc)}")
 
+        st.divider()
+        render_admin_panel()
         st.divider()
         if st.button("Sign out"):
             logout()
