@@ -357,6 +357,29 @@ def refresh_session() -> bool:
     return True
 
 
+def sync_current_user_context() -> None:
+    if not st.session_state.access_token:
+        return
+
+    try:
+        response = get_supabase_client().auth.get_user(st.session_state.access_token)
+        user = extract_user(response)
+    except Exception:
+        if not refresh_session():
+            return
+        try:
+            response = get_supabase_client().auth.get_user(st.session_state.access_token)
+            user = extract_user(response)
+        except Exception:
+            return
+
+    email = user.get("email")
+    if isinstance(email, str) and email:
+        st.session_state.user_email = email
+
+    st.session_state.user_role = extract_user_role(user)
+
+
 def get_supabase_rest_headers() -> dict[str, str]:
     return {
         "apikey": require_env("SUPABASE_KEY"),
@@ -506,8 +529,7 @@ def render_chat() -> None:
     with st.sidebar:
         st.caption("Signed in as")
         st.write(st.session_state.user_email)
-        if st.session_state.user_role:
-            st.caption(f"Role: {st.session_state.user_role}")
+        st.caption(f"Role: {st.session_state.user_role or 'Not assigned'}")
 
         if st.button("New Chat", use_container_width=True):
             start_new_chat()
@@ -609,11 +631,17 @@ def render_chat() -> None:
 
 def main() -> None:
     load_env_file()
-    st.set_page_config(page_title="FinSolve AI", page_icon="FS", layout="centered")
+    st.set_page_config(
+        page_title="FinSolve AI",
+        page_icon="FS",
+        layout="centered",
+        initial_sidebar_state="expanded",
+    )
     inject_custom_css()
     initialize_session_state()
 
     if st.session_state.access_token:
+        sync_current_user_context()
         render_chat()
     else:
         render_login()
