@@ -52,12 +52,23 @@ def require_env(name: str) -> str:
 
 @lru_cache(maxsize=1)
 def get_supabase_client() -> Client:
-    """Create a cached Supabase client from environment configuration."""
+    """Create a cached Supabase client for user authentication."""
 
     load_env_file()
     return create_client(
         require_env("SUPABASE_URL"),
         require_env("SUPABASE_KEY"),
+    )
+
+
+@lru_cache(maxsize=1)
+def get_supabase_admin_client() -> Client:
+    """Create a cached backend-only Supabase client for privileged writes."""
+
+    load_env_file()
+    return create_client(
+        require_env("SUPABASE_URL"),
+        require_env("SUPABASE_SERVICE_ROLE_KEY"),
     )
 
 

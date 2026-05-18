@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 
-from security import CurrentUser, get_current_user
+from security import CurrentUser, get_current_user, get_supabase_admin_client
 
 
 logger = logging.getLogger(__name__)
@@ -278,23 +278,41 @@ def answer_question(question: str, user_role: str, top_k: int) -> ChatResponse:
     )
 
 
+def log_query(user: CurrentUser, query_text: str, successful: bool) -> None:
+    try:
+        get_supabase_admin_client().table("query_logs").insert(
+            {
+                "user_id": user.id,
+                "user_role": user.role,
+                "query_text": query_text,
+                "successful": successful,
+            }
+        ).execute()
+    except Exception:
+        logger.exception("Failed to write query audit log")
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(
     request: ChatRequest,
     current_user: CurrentUser = Depends(get_current_user),
 ) -> ChatResponse:
     try:
-        return answer_question(
+        response = answer_question(
             question=request.question,
             user_role=current_user.role,
             top_k=request.top_k,
         )
+        log_query(current_user, request.question, successful=True)
+        return response
     except RuntimeError as exc:
+        log_query(current_user, request.question, successful=False)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(exc),
         ) from exc
     except Exception as exc:
+        log_query(current_user, request.question, successful=False)
         logger.exception("Chat service failed for authenticated user role=%s", current_user.role)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
