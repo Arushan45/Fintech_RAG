@@ -582,10 +582,6 @@ def render_chat() -> None:
             logout()
             st.rerun()
 
-    with st.expander("Chat History & Admin", expanded=True):
-        render_chat_controls("main")
-        render_admin_panel("main", use_expander=False)
-
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
