@@ -316,6 +316,9 @@ def render_chat() -> None:
 
         try:
             answer = st.write_stream(token_stream)
+            if not answer:
+                answer = "I could not generate a response. Please try again."
+                st.markdown(answer)
         except Exception as exc:
             answer = "".join(streamed_parts) or str(exc)
             sources = []

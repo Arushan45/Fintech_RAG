@@ -444,9 +444,27 @@ def stream_answer(
     }
 
     try:
+        emitted_token = False
         for token in chain.stream(chain_input):
             if token:
-                yield stream_event({"type": "token", "content": token})
+                emitted_token = True
+                yield stream_event({"type": "token", "content": str(token)})
+
+        if not emitted_token:
+            fallback_answer = chain.invoke(chain_input)
+            if fallback_answer:
+                yield stream_event(
+                    {"type": "token", "content": str(fallback_answer)}
+                )
+            else:
+                yield stream_event(
+                    {
+                        "type": "token",
+                        "content": (
+                            "I could not generate a response. Please try again."
+                        ),
+                    }
+                )
 
         sources = [
             serialize_source(document).model_dump()
