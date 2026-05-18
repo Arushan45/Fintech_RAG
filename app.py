@@ -456,14 +456,15 @@ def start_new_chat() -> None:
     st.session_state.session_id = None
 
 
-def render_admin_panel() -> None:
+def render_admin_panel(key_prefix: str, use_expander: bool = True) -> None:
     if (st.session_state.user_role or "").strip().lower() not in ADMIN_ROLES:
         return
 
     st.divider()
     st.caption("Admin")
 
-    with st.expander("User Roles", expanded=False):
+    admin_container = st.expander("User Roles", expanded=False) if use_expander else st.container()
+    with admin_container:
         try:
             users = fetch_admin_users()
         except Exception as exc:
@@ -491,16 +492,63 @@ def render_admin_panel() -> None:
                 "Role",
                 AVAILABLE_ROLES,
                 index=default_index,
-                key=f"role_select_{user_id}",
+                key=f"{key_prefix}_role_select_{user_id}",
                 label_visibility="collapsed",
             )
 
-            if st.button("Update Role", key=f"role_update_{user_id}", use_container_width=True):
+            if st.button(
+                "Update Role",
+                key=f"{key_prefix}_role_update_{user_id}",
+                use_container_width=True,
+            ):
                 try:
                     update_user_role(user_id, selected_role)
                     st.success(f"Updated {email} to {selected_role}.")
                 except Exception as exc:
                     st.error(f"Unable to update role: {get_safe_error_message(exc)}")
+
+
+def render_chat_controls(key_prefix: str) -> None:
+    st.caption("Signed in as")
+    st.write(st.session_state.user_email)
+    st.caption(f"Role: {st.session_state.user_role or 'Not assigned'}")
+
+    if st.button("New Chat", key=f"{key_prefix}_new_chat", use_container_width=True):
+        start_new_chat()
+        st.rerun()
+
+    st.divider()
+    st.caption("Past chats")
+    try:
+        sessions = fetch_chat_sessions()
+    except Exception as exc:
+        sessions = []
+        st.caption(f"Unable to load chats: {get_safe_error_message(exc)}")
+
+    if not sessions:
+        st.caption("No saved chats yet.")
+
+    for session in sessions:
+        session_id = session.get("id")
+        if not isinstance(session_id, str):
+            continue
+
+        title = session.get("title")
+        if not isinstance(title, str) or not title.strip():
+            title = "Untitled chat"
+
+        is_active = session_id == st.session_state.session_id
+        label = f"• {title}" if is_active else title
+        if st.button(
+            label,
+            key=f"{key_prefix}_session_{session_id}",
+            use_container_width=True,
+        ):
+            try:
+                load_chat_session(session_id)
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Unable to load chat: {get_safe_error_message(exc)}")
 
 
 def render_sources(sources: list[dict[str, Any]]) -> None:
@@ -527,49 +575,16 @@ def render_chat() -> None:
     st.title("FinSolve AI")
 
     with st.sidebar:
-        st.caption("Signed in as")
-        st.write(st.session_state.user_email)
-        st.caption(f"Role: {st.session_state.user_role or 'Not assigned'}")
-
-        if st.button("New Chat", use_container_width=True):
-            start_new_chat()
-            st.rerun()
-
-        st.divider()
-        st.caption("Past chats")
-        try:
-            sessions = fetch_chat_sessions()
-        except Exception as exc:
-            sessions = []
-            st.caption(f"Unable to load chats: {get_safe_error_message(exc)}")
-
-        if not sessions:
-            st.caption("No saved chats yet.")
-
-        for session in sessions:
-            session_id = session.get("id")
-            if not isinstance(session_id, str):
-                continue
-
-            title = session.get("title")
-            if not isinstance(title, str) or not title.strip():
-                title = "Untitled chat"
-
-            is_active = session_id == st.session_state.session_id
-            label = f"• {title}" if is_active else title
-            if st.button(label, key=f"session_{session_id}", use_container_width=True):
-                try:
-                    load_chat_session(session_id)
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Unable to load chat: {get_safe_error_message(exc)}")
-
-        st.divider()
-        render_admin_panel()
+        render_chat_controls("sidebar")
+        render_admin_panel("sidebar")
         st.divider()
         if st.button("Sign out"):
             logout()
             st.rerun()
+
+    with st.expander("Chat History & Admin", expanded=True):
+        render_chat_controls("main")
+        render_admin_panel("main", use_expander=False)
 
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
