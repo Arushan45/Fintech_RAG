@@ -6,6 +6,7 @@ import os
 import json
 import logging
 import re
+from uuid import UUID
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
@@ -13,9 +14,10 @@ from typing import Any, Iterator
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.documents import Document
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_qdrant import QdrantVectorStore
@@ -109,6 +111,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1)
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=10)
+    session_id: str | None = None
 
 
 class SourceChunk(BaseModel):
@@ -294,6 +297,108 @@ def serialize_source(document: Document) -> SourceChunk:
     )
 
 
+def validate_uuid(value: str) -> str:
+    try:
+        return str(UUID(value))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="session_id must be a valid UUID",
+        ) from exc
+
+
+def make_session_title(prompt: str) -> str:
+    title = " ".join(prompt.strip().split())
+    if len(title) > 60:
+        title = f"{title[:57].rstrip()}..."
+    return title or "New chat"
+
+
+def extract_supabase_rows(response: Any) -> list[dict[str, Any]]:
+    data = getattr(response, "data", None)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return [data]
+    return []
+
+
+def create_chat_session(user: CurrentUser, prompt: str) -> str:
+    response = get_supabase_admin_client().table("chat_sessions").insert(
+        {
+            "user_id": user.id,
+            "title": make_session_title(prompt),
+        }
+    ).execute()
+    rows = extract_supabase_rows(response)
+    if not rows or not isinstance(rows[0].get("id"), str):
+        raise RuntimeError("Failed to create chat session")
+    return rows[0]["id"]
+
+
+def ensure_user_owns_session(session_id: str, user: CurrentUser) -> None:
+    response = get_supabase_admin_client().table("chat_sessions").select("id").eq(
+        "id", session_id
+    ).eq("user_id", user.id).limit(1).execute()
+    if not extract_supabase_rows(response):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chat session not found",
+        )
+
+
+def resolve_chat_session(request: ChatRequest, user: CurrentUser) -> str:
+    if request.session_id:
+        session_id = validate_uuid(request.session_id)
+        ensure_user_owns_session(session_id, user)
+        return session_id
+
+    return create_chat_session(user, request.question)
+
+
+def fetch_chat_history(session_id: str, user: CurrentUser) -> list[BaseMessage]:
+    ensure_user_owns_session(session_id, user)
+    response = get_supabase_admin_client().table("chat_messages").select(
+        "role, content, created_at"
+    ).eq("session_id", session_id).order("created_at", desc=True).limit(6).execute()
+    rows = list(reversed(extract_supabase_rows(response)))
+
+    messages: list[BaseMessage] = []
+    for row in rows:
+        role = row.get("role")
+        content = row.get("content")
+        if not isinstance(content, str):
+            continue
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            messages.append(AIMessage(content=content))
+    return messages
+
+
+def insert_chat_messages(session_id: str, user_prompt: str, assistant_answer: str) -> None:
+    if not assistant_answer.strip():
+        return
+
+    try:
+        get_supabase_admin_client().table("chat_messages").insert(
+            [
+                {
+                    "session_id": session_id,
+                    "role": "user",
+                    "content": user_prompt,
+                },
+                {
+                    "session_id": session_id,
+                    "role": "assistant",
+                    "content": assistant_answer,
+                },
+            ]
+        ).execute()
+    except Exception:
+        logger.exception("Failed to write chat messages for session_id=%s", session_id)
+
+
 def get_accessible_context_documents(
     question: str,
     user_role: str,
@@ -321,6 +426,7 @@ def build_chat_chain() -> Any:
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", SYSTEM_PROMPT),
+            MessagesPlaceholder(variable_name="chat_history"),
             (
                 "human",
                 "Context:\n{context}\n\nQuestion:\n{question}",
@@ -337,23 +443,34 @@ def stream_event(payload: dict[str, Any]) -> str:
 def stream_answer(
     question: str,
     documents: list[Document],
+    chat_history: list[BaseMessage],
+    session_id: str,
+    background_tasks: BackgroundTasks,
 ) -> Iterator[str]:
+    generated_parts: list[str] = []
+
     if not documents:
-        yield stream_event(
-            {
-                "type": "token",
-                "content": (
-                    "I could not find accessible source documents for this "
-                    "question. Please check that Qdrant has been ingested and "
-                    "that your user role matches the document access level."
-                ),
-            }
+        message = (
+            "I could not find accessible source documents for this question. "
+            "Please check that Qdrant has been ingested and that your user role "
+            "matches the document access level."
         )
-        yield stream_event({"type": "sources", "sources": []})
+        generated_parts.append(message)
+        yield stream_event({"type": "token", "content": message})
+        background_tasks.add_task(
+            insert_chat_messages,
+            session_id,
+            question,
+            "".join(generated_parts),
+        )
+        yield stream_event(
+            {"type": "sources", "session_id": session_id, "sources": []}
+        )
         return
 
     chain = build_chat_chain()
     chain_input = {
+        "chat_history": chat_history,
         "context": format_context(documents),
         "question": question,
     }
@@ -363,21 +480,24 @@ def stream_answer(
         for token in chain.stream(chain_input):
             if token:
                 emitted_token = True
-                yield stream_event({"type": "token", "content": str(token)})
+                token_text = str(token)
+                generated_parts.append(token_text)
+                yield stream_event({"type": "token", "content": token_text})
 
         if not emitted_token:
             fallback_answer = chain.invoke(chain_input)
             if fallback_answer:
+                generated_parts.append(str(fallback_answer))
                 yield stream_event(
                     {"type": "token", "content": str(fallback_answer)}
                 )
             else:
+                fallback_message = "I could not generate a response. Please try again."
+                generated_parts.append(fallback_message)
                 yield stream_event(
                     {
                         "type": "token",
-                        "content": (
-                            "I could not generate a response. Please try again."
-                        ),
+                        "content": fallback_message,
                     }
                 )
 
@@ -385,7 +505,15 @@ def stream_answer(
             serialize_source(document).model_dump()
             for document in documents
         ]
-        yield stream_event({"type": "sources", "sources": sources})
+        background_tasks.add_task(
+            insert_chat_messages,
+            session_id,
+            question,
+            "".join(generated_parts),
+        )
+        yield stream_event(
+            {"type": "sources", "session_id": session_id, "sources": sources}
+        )
     except Exception:
         logger.exception("Chat stream failed")
         yield stream_event(
@@ -404,6 +532,7 @@ def answer_question(question: str, user_role: str, top_k: int) -> ChatResponse:
     )
     answer = build_chat_chain().invoke(
         {
+            "chat_history": [],
             "context": format_context(anonymized_documents),
             "question": question,
         }
@@ -436,6 +565,8 @@ def chat(
     current_user: CurrentUser = Depends(get_current_user),
 ) -> StreamingResponse:
     try:
+        session_id = resolve_chat_session(request, current_user)
+        chat_history = fetch_chat_history(session_id, current_user)
         documents = get_accessible_context_documents(
             question=request.question,
             user_role=current_user.role,
@@ -443,7 +574,13 @@ def chat(
         )
         background_tasks.add_task(log_query, current_user, request.question, True)
         return StreamingResponse(
-            stream_answer(request.question, documents),
+            stream_answer(
+                question=request.question,
+                documents=documents,
+                chat_history=chat_history,
+                session_id=session_id,
+                background_tasks=background_tasks,
+            ),
             media_type="application/x-ndjson",
             background=background_tasks,
         )

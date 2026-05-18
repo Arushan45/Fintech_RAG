@@ -56,6 +56,39 @@ def get_backend_url() -> str:
     return backend_url
 
 
+def inject_custom_css() -> None:
+    st.markdown(
+        """
+        <style>
+            #MainMenu,
+            footer,
+            [data-testid="stToolbar"],
+            [data-testid="stDecoration"],
+            [data-testid="stDeployButton"] {
+                display: none !important;
+                visibility: hidden !important;
+            }
+
+            [data-testid="stChatMessage"] {
+                border-radius: 10px;
+                padding: 0.35rem 0.45rem;
+            }
+
+            [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+                background: rgba(37, 99, 235, 0.10);
+                border: 1px solid rgba(37, 99, 235, 0.35);
+            }
+
+            [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) {
+                background: rgba(30, 41, 59, 0.72);
+                border: 1px solid rgba(148, 163, 184, 0.16);
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def as_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
@@ -122,6 +155,7 @@ def initialize_session_state() -> None:
     st.session_state.setdefault("refresh_token", None)
     st.session_state.setdefault("user_email", None)
     st.session_state.setdefault("messages", [])
+    st.session_state.setdefault("session_id", None)
 
 
 def login(email: str, password: str) -> None:
@@ -143,6 +177,7 @@ def login(email: str, password: str) -> None:
     st.session_state.refresh_token = refresh_token
     st.session_state.user_email = user.get("email", email)
     st.session_state.messages = []
+    st.session_state.session_id = None
 
 
 def logout() -> None:
@@ -150,6 +185,7 @@ def logout() -> None:
     st.session_state.refresh_token = None
     st.session_state.user_email = None
     st.session_state.messages = []
+    st.session_state.session_id = None
 
 
 def render_login() -> None:
@@ -185,12 +221,16 @@ def stream_chat_api(question: str) -> Iterator[dict[str, Any]]:
         return str(detail)
 
     def post_chat() -> requests.Response:
+        payload: dict[str, Any] = {
+            "question": question,
+            "top_k": 5,
+        }
+        if st.session_state.session_id:
+            payload["session_id"] = st.session_state.session_id
+
         return requests.post(
             f"{get_backend_url()}/api/chat",
-            json={
-                "question": question,
-                "top_k": 5,
-            },
+            json=payload,
             headers={
                 "Authorization": f"Bearer {st.session_state.access_token}",
             },
@@ -251,6 +291,82 @@ def refresh_session() -> bool:
     return True
 
 
+def get_supabase_rest_headers() -> dict[str, str]:
+    return {
+        "apikey": require_env("SUPABASE_KEY"),
+        "Authorization": f"Bearer {st.session_state.access_token}",
+        "Content-Type": "application/json",
+    }
+
+
+def supabase_rest_get(path: str, params: dict[str, str]) -> list[dict[str, Any]]:
+    response = requests.get(
+        f"{require_env('SUPABASE_URL').rstrip('/')}/rest/v1/{path}",
+        headers=get_supabase_rest_headers(),
+        params=params,
+        timeout=30,
+    )
+
+    if response.status_code == 401 and refresh_session():
+        response = requests.get(
+            f"{require_env('SUPABASE_URL').rstrip('/')}/rest/v1/{path}",
+            headers=get_supabase_rest_headers(),
+            params=params,
+            timeout=30,
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(response.text)
+
+    data = response.json()
+    return data if isinstance(data, list) else []
+
+
+def fetch_chat_sessions() -> list[dict[str, Any]]:
+    return supabase_rest_get(
+        "chat_sessions",
+        {
+            "select": "id,title,created_at",
+            "order": "created_at.desc",
+        },
+    )
+
+
+def fetch_chat_messages(session_id: str) -> list[dict[str, Any]]:
+    return supabase_rest_get(
+        "chat_messages",
+        {
+            "select": "role,content,created_at",
+            "session_id": f"eq.{session_id}",
+            "order": "created_at.asc",
+        },
+    )
+
+
+def load_chat_session(session_id: str) -> None:
+    rows = fetch_chat_messages(session_id)
+    messages: list[dict[str, Any]] = []
+    for row in rows:
+        role = row.get("role")
+        content = row.get("content")
+        if role in {"user", "assistant"} and isinstance(content, str):
+            messages.append(
+                {
+                    "role": role,
+                    "content": content,
+                    "sources": [],
+                }
+            )
+
+    st.session_state.session_id = session_id
+    st.session_state.messages = messages
+
+
+def start_new_chat() -> None:
+    st.session_state.messages = []
+    st.session_state.session_id = None
+
+
 def render_sources(sources: list[dict[str, Any]]) -> None:
     with st.expander("Source References"):
         if not sources:
@@ -277,6 +393,41 @@ def render_chat() -> None:
     with st.sidebar:
         st.caption("Signed in as")
         st.write(st.session_state.user_email)
+
+        if st.button("New Chat", use_container_width=True):
+            start_new_chat()
+            st.rerun()
+
+        st.divider()
+        st.caption("Past chats")
+        try:
+            sessions = fetch_chat_sessions()
+        except Exception as exc:
+            sessions = []
+            st.caption(f"Unable to load chats: {get_safe_error_message(exc)}")
+
+        if not sessions:
+            st.caption("No saved chats yet.")
+
+        for session in sessions:
+            session_id = session.get("id")
+            if not isinstance(session_id, str):
+                continue
+
+            title = session.get("title")
+            if not isinstance(title, str) or not title.strip():
+                title = "Untitled chat"
+
+            is_active = session_id == st.session_state.session_id
+            label = f"• {title}" if is_active else title
+            if st.button(label, key=f"session_{session_id}", use_container_width=True):
+                try:
+                    load_chat_session(session_id)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Unable to load chat: {get_safe_error_message(exc)}")
+
+        st.divider()
         if st.button("Sign out"):
             logout()
             st.rerun()
@@ -298,9 +449,10 @@ def render_chat() -> None:
     with st.chat_message("assistant"):
         sources: list[dict[str, Any]] = []
         streamed_parts: list[str] = []
+        session_id = st.session_state.session_id
 
         def token_stream() -> Iterator[str]:
-            nonlocal sources
+            nonlocal session_id, sources
 
             for event in stream_chat_api(prompt):
                 event_type = event.get("type")
@@ -311,6 +463,8 @@ def render_chat() -> None:
                 elif event_type == "sources":
                     source_payload = event.get("sources", [])
                     sources = source_payload if isinstance(source_payload, list) else []
+                    if isinstance(event.get("session_id"), str):
+                        session_id = event["session_id"]
                 elif event_type == "error":
                     raise RuntimeError(event.get("message", "Chat stream failed."))
 
@@ -325,6 +479,7 @@ def render_chat() -> None:
             st.markdown(answer)
 
         render_sources(sources)
+        st.session_state.session_id = session_id
 
     st.session_state.messages.append(
         {
@@ -338,6 +493,7 @@ def render_chat() -> None:
 def main() -> None:
     load_env_file()
     st.set_page_config(page_title="FinSolve AI", page_icon="FS", layout="centered")
+    inject_custom_css()
     initialize_session_state()
 
     if st.session_state.access_token:
