@@ -124,6 +124,11 @@ class ChatResponse(BaseModel):
     sources: list[SourceChunk]
 
 
+class RoleUpdateRequest(BaseModel):
+    user_id: str = Field(..., min_length=1)
+    new_role: str = Field(..., min_length=1)
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
@@ -295,6 +300,93 @@ def serialize_source(document: Document) -> SourceChunk:
         content=document.page_content,
         metadata=dict(document.metadata),
     )
+
+
+def require_admin_user(current_user: CurrentUser) -> None:
+    if current_user.role.strip().lower() not in {"c-level", "admin"}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+
+
+def object_to_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    return {}
+
+
+def extract_user_role(user_data: dict[str, Any]) -> str | None:
+    metadata = user_data.get("user_metadata")
+    if not isinstance(metadata, dict):
+        metadata = user_data.get("raw_user_meta_data")
+    if isinstance(metadata, dict):
+        role = metadata.get("role")
+        if isinstance(role, str):
+            return role
+    return None
+
+
+@app.get("/api/admin/users")
+def list_admin_users(
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, list[dict[str, str | None]]]:
+    require_admin_user(current_user)
+    supabase_admin = get_supabase_admin_client()
+
+    try:
+        users = supabase_admin.auth.admin.list_users()
+    except Exception as exc:
+        logger.exception("Failed to list Supabase users")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to list users",
+        ) from exc
+
+    return {
+        "users": [
+            {
+                "id": str(user_data.get("id") or ""),
+                "email": user_data.get("email"),
+                "role": extract_user_role(user_data),
+            }
+            for user_data in (object_to_dict(user) for user in users)
+        ]
+    }
+
+
+@app.post("/api/admin/update_role")
+def update_admin_user_role(
+    request: RoleUpdateRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+) -> dict[str, str]:
+    require_admin_user(current_user)
+    user_id = validate_uuid(request.user_id)
+    new_role = request.new_role.strip()
+    if not new_role:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="new_role is required",
+        )
+
+    supabase_admin = get_supabase_admin_client()
+    try:
+        supabase_admin.auth.admin.update_user_by_id(
+            user_id,
+            {"user_metadata": {"role": new_role}},
+        )
+    except Exception as exc:
+        logger.exception("Failed to update role for user_id=%s", user_id)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Unable to update user role",
+        ) from exc
+
+    return {"message": "User role updated successfully"}
 
 
 def validate_uuid(value: str) -> str:
