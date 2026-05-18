@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import requests
 import streamlit as st
@@ -174,7 +175,7 @@ def render_login() -> None:
         st.error(f"Unable to sign in: {get_safe_error_message(exc)}")
 
 
-def call_chat_api(question: str) -> dict[str, Any]:
+def stream_chat_api(question: str) -> Iterator[dict[str, Any]]:
     def response_detail(response: requests.Response) -> str:
         detail = response.text
         try:
@@ -193,17 +194,20 @@ def call_chat_api(question: str) -> dict[str, Any]:
             headers={
                 "Authorization": f"Bearer {st.session_state.access_token}",
             },
+            stream=True,
             timeout=120,
         )
 
     response = post_chat()
 
     if response.status_code == 401:
+        response.close()
         if refresh_session():
             response = post_chat()
 
         if response.status_code == 401:
             detail = response_detail(response)
+            response.close()
             logout()
             raise RuntimeError(
                 "Authentication failed. Please sign in again. "
@@ -211,9 +215,20 @@ def call_chat_api(question: str) -> dict[str, Any]:
             )
 
     if response.status_code >= 400:
-        raise RuntimeError(response_detail(response))
+        detail = response_detail(response)
+        response.close()
+        raise RuntimeError(detail)
 
-    return response.json()
+    try:
+        for line in response.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("Received malformed chat stream data.") from exc
+    finally:
+        response.close()
 
 
 def refresh_session() -> bool:
@@ -281,16 +296,31 @@ def render_chat() -> None:
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        with st.spinner("Checking your permitted knowledge base..."):
-            try:
-                payload = call_chat_api(prompt)
-                answer = payload.get("answer", "")
-                sources = payload.get("sources", [])
-            except Exception as exc:
-                answer = str(exc)
-                sources = []
+        sources: list[dict[str, Any]] = []
+        streamed_parts: list[str] = []
 
-        st.markdown(answer)
+        def token_stream() -> Iterator[str]:
+            nonlocal sources
+
+            for event in stream_chat_api(prompt):
+                event_type = event.get("type")
+                if event_type == "token":
+                    token = str(event.get("content", ""))
+                    streamed_parts.append(token)
+                    yield token
+                elif event_type == "sources":
+                    source_payload = event.get("sources", [])
+                    sources = source_payload if isinstance(source_payload, list) else []
+                elif event_type == "error":
+                    raise RuntimeError(event.get("message", "Chat stream failed."))
+
+        try:
+            answer = st.write_stream(token_stream)
+        except Exception as exc:
+            answer = "".join(streamed_parts) or str(exc)
+            sources = []
+            st.markdown(answer)
+
         render_sources(sources)
 
     st.session_state.messages.append(
