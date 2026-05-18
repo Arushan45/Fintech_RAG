@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 import json
 import logging
+import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterator
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,19 +19,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_openai import ChatOpenAI
 from langchain_qdrant import QdrantVectorStore
-from presidio_analyzer import AnalyzerEngine, Pattern, PatternRecognizer
-from presidio_analyzer.nlp_engine import NlpArtifacts, NlpEngine
-from presidio_analyzer.predefined_recognizers import (
-    CreditCardRecognizer,
-    PhoneRecognizer,
-)
-from presidio_analyzer.recognizer_registry import RecognizerRegistry
-from presidio_anonymizer import AnonymizerEngine
-from presidio_anonymizer.entities import OperatorConfig
 from pydantic import BaseModel, Field
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
-import spacy
 
 from security import CurrentUser, get_current_user, get_supabase_admin_client
 
@@ -55,12 +46,12 @@ DEFAULT_CORS_ORIGINS = [
     "http://localhost:8501",
 ]
 PII_ENTITIES = ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "CREDIT_CARD"]
-PII_OPERATORS = {
-    "PERSON": OperatorConfig("replace", {"new_value": "[PERSON_REDACTED]"}),
-    "EMAIL_ADDRESS": OperatorConfig("replace", {"new_value": "[EMAIL_REDACTED]"}),
-    "PHONE_NUMBER": OperatorConfig("replace", {"new_value": "[PHONE_REDACTED]"}),
-    "CREDIT_CARD": OperatorConfig("replace", {"new_value": "[CREDIT_CARD_REDACTED]"}),
-}
+EMAIL_PATTERN = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
+PHONE_PATTERN = re.compile(
+    r"(?<!\w)(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}(?!\w)"
+)
+CREDIT_CARD_PATTERN = re.compile(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)")
+PERSON_PATTERN = re.compile(r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}\b")
 
 
 def load_env_file(path: Path = Path(".env")) -> None:
@@ -128,59 +119,6 @@ class SourceChunk(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     sources: list[SourceChunk]
-
-
-class BlankEnglishNlpEngine(NlpEngine):
-    """Local NLP engine that avoids runtime spaCy model downloads."""
-
-    def __init__(self) -> None:
-        self.nlp: dict[str, Any] = {}
-
-    def load(self) -> None:
-        if "en" not in self.nlp:
-            self.nlp["en"] = spacy.blank("en")
-
-    def is_loaded(self) -> bool:
-        return "en" in self.nlp
-
-    def process_text(self, text: str, language: str) -> NlpArtifacts:
-        self.load()
-        doc = self.nlp[language](text)
-        lemmas = [token.lemma_ or token.text for token in doc]
-        tokens_indices = [token.idx for token in doc]
-        return NlpArtifacts(
-            entities=list(doc.ents),
-            tokens=doc,
-            tokens_indices=tokens_indices,
-            lemmas=lemmas,
-            nlp_engine=self,
-            language=language,
-        )
-
-    def process_batch(
-        self,
-        texts: Iterable[str],
-        language: str,
-        batch_size: int = 1,
-        n_process: int = 1,
-        **kwargs: Any,
-    ) -> Iterator[tuple[str, NlpArtifacts]]:
-        for text in texts:
-            yield text, self.process_text(text, language)
-
-    def is_stopword(self, word: str, language: str) -> bool:
-        self.load()
-        return self.nlp[language].vocab[word].is_stop
-
-    def is_punct(self, word: str, language: str) -> bool:
-        self.load()
-        return self.nlp[language].vocab[word].is_punct
-
-    def get_supported_entities(self) -> list[str]:
-        return []
-
-    def get_supported_languages(self) -> list[str]:
-        return ["en"]
 
 
 @app.get("/healthz")
@@ -265,63 +203,6 @@ def get_llm() -> Any:
     raise RuntimeError("LLM_PROVIDER must be either 'gemini' or 'openai'")
 
 
-@lru_cache(maxsize=1)
-def get_pii_analyzer() -> AnalyzerEngine:
-    nlp_engine = BlankEnglishNlpEngine()
-    nlp_engine.load()
-
-    registry = RecognizerRegistry(supported_languages=["en"])
-    registry.add_recognizer(
-        PatternRecognizer(
-            supported_entity="EMAIL_ADDRESS",
-            name="local_email_recognizer",
-            patterns=[
-                Pattern(
-                    name="email_address",
-                    regex=r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
-                    score=0.85,
-                )
-            ],
-        )
-    )
-    registry.add_recognizer(PhoneRecognizer())
-    registry.add_recognizer(CreditCardRecognizer())
-    registry.add_recognizer(
-        PatternRecognizer(
-            supported_entity="PERSON",
-            name="capitalized_full_name_recognizer",
-            patterns=[
-                Pattern(
-                    name="capitalized_full_name",
-                    regex=r"\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}\b",
-                    score=0.65,
-                )
-            ],
-            context=[
-                "name",
-                "employee",
-                "manager",
-                "customer",
-                "client",
-                "contact",
-                "called",
-                "emailed",
-            ],
-            global_regex_flags=0,
-        )
-    )
-    return AnalyzerEngine(
-        registry=registry,
-        nlp_engine=nlp_engine,
-        supported_languages=["en"],
-    )
-
-
-@lru_cache(maxsize=1)
-def get_pii_anonymizer() -> AnonymizerEngine:
-    return AnonymizerEngine()
-
-
 def build_access_filter(user_role: str) -> models.Filter | None:
     role = user_role.strip().lower()
 
@@ -352,18 +233,32 @@ def build_access_filter(user_role: str) -> models.Filter | None:
     )
 
 
+def is_luhn_valid(value: str) -> bool:
+    digits = [int(char) for char in re.sub(r"\D", "", value)]
+    if len(digits) < 13 or len(digits) > 19:
+        return False
+
+    checksum = 0
+    parity = len(digits) % 2
+    for index, digit in enumerate(digits):
+        if index % 2 == parity:
+            digit *= 2
+            if digit > 9:
+                digit -= 9
+        checksum += digit
+    return checksum % 10 == 0
+
+
+def redact_credit_card(match: re.Match[str]) -> str:
+    return "[CREDIT_CARD_REDACTED]" if is_luhn_valid(match.group(0)) else match.group(0)
+
+
 def anonymize_text(text: str) -> str:
-    analyzer_results = get_pii_analyzer().analyze(
-        text=text,
-        entities=PII_ENTITIES,
-        language="en",
-    )
-    anonymized_result = get_pii_anonymizer().anonymize(
-        text=text,
-        analyzer_results=analyzer_results,
-        operators=PII_OPERATORS,
-    )
-    return anonymized_result.text
+    anonymized = EMAIL_PATTERN.sub("[EMAIL_REDACTED]", text)
+    anonymized = CREDIT_CARD_PATTERN.sub(redact_credit_card, anonymized)
+    anonymized = PHONE_PATTERN.sub("[PHONE_REDACTED]", anonymized)
+    anonymized = PERSON_PATTERN.sub("[PERSON_REDACTED]", anonymized)
+    return anonymized
 
 
 def anonymize_context_chunks(documents: list[Document]) -> list[Document]:

@@ -4,7 +4,5 @@ langchain-google-genai
 langchain-qdrant
 langchain-openai
 qdrant-client
-presidio-analyzer
-presidio-anonymizer
 supabase
 requests
