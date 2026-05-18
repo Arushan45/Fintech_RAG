@@ -413,7 +413,13 @@ def get_accessible_context_documents(
         }
     )
     retrieved_documents = retriever.invoke(question)
-    return anonymize_context_chunks(retrieved_documents)
+    anonymized_documents = anonymize_context_chunks(retrieved_documents)
+    logger.info(
+        "Retrieved %s accessible chunks for role=%s",
+        len(anonymized_documents),
+        user_role,
+    )
+    return anonymized_documents
 
 
 def build_chat_chain() -> Any:
@@ -437,6 +443,20 @@ def stream_answer(
     question: str,
     documents: list[Document],
 ) -> Iterator[str]:
+    if not documents:
+        yield stream_event(
+            {
+                "type": "token",
+                "content": (
+                    "I could not find accessible source documents for this "
+                    "question. Please check that Qdrant has been ingested and "
+                    "that your user role matches the document access level."
+                ),
+            }
+        )
+        yield stream_event({"type": "sources", "sources": []})
+        return
+
     chain = build_chat_chain()
     chain_input = {
         "context": format_context(documents),
